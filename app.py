@@ -2,7 +2,7 @@ import os
 from io import BytesIO
 from flask import Flask, request, jsonify, render_template
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from keras.applications.xception import Xception
+from keras.applications.xception import Xception, preprocess_input
 from keras.models import Model
 from tensorflow.keras.layers import Input, Dense, LSTM, Embedding, Dropout
 from tensorflow.keras.layers import add
@@ -13,7 +13,7 @@ from PIL import Image
 app = Flask(__name__)
 
 # -----------------------------------
-# Load tokenizer and model weights
+# Load tokenizer & model
 # -----------------------------------
 TOKENIZER_PATH = "saved/tokenizer.p"
 MODEL_WEIGHTS_PATH = "saved/model_1.h5"
@@ -22,8 +22,12 @@ tokenizer = load(open(TOKENIZER_PATH, "rb"))
 vocab_size = len(tokenizer.word_index) + 1
 max_length = 32
 
+# Faster lookup dictionary
+index_to_word = {v: k for k, v in tokenizer.word_index.items()}
+
+
 # -----------------------------------
-# Define model architecture (same as training)
+# Build model architecture
 # -----------------------------------
 def define_model(vocab_size, max_length):
     inputs1 = Input(shape=(2048,), name='input_1')
@@ -44,6 +48,7 @@ def define_model(vocab_size, max_length):
 
     return model
 
+
 model = define_model(vocab_size, max_length)
 model.load_weights(MODEL_WEIGHTS_PATH)
 
@@ -52,40 +57,37 @@ xception_model = Xception(include_top=False, pooling="avg")
 
 
 # -----------------------------------
-# Image Feature Extraction (IN MEMORY)
+# Extract features from uploaded image
 # -----------------------------------
 def extract_features_from_buffer(image_buffer, model):
     try:
-        image = Image.open(BytesIO(image_buffer))
+        image = Image.open(BytesIO(image_buffer)).convert("RGB")
     except:
         return None
 
     image = image.resize((299, 299))
     image = np.array(image)
-
-    # remove alpha channel if exists
-    if image.ndim == 3 and image.shape[2] == 4:
-        image = image[:, :, :3]
-
     image = np.expand_dims(image, axis=0)
-    image = image / 127.5 - 1.0
+    image = preprocess_input(image)
 
-    feature = model.predict(image)
+    try:
+        feature = model.predict(image)
+    except Exception as e:
+        print("🔥 Feature extraction error:", e)
+        return None
+
     return feature
 
 
 # -----------------------------------
 # Convert predicted index → word
 # -----------------------------------
-def word_for_id(integer, tokenizer):
-    for word, index in tokenizer.word_index.items():
-        if index == integer:
-            return word
-    return None
+def word_for_id(integer):
+    return index_to_word.get(integer, None)
 
 
 # -----------------------------------
-# Caption Generation Logic
+# Caption generator
 # -----------------------------------
 def generate_desc(model, tokenizer, photo, max_length):
     in_text = "start"
@@ -97,11 +99,12 @@ def generate_desc(model, tokenizer, photo, max_length):
         yhat = model.predict([photo, seq], verbose=0)
         yhat = np.argmax(yhat)
 
-        word = word_for_id(yhat, tokenizer)
+        word = word_for_id(yhat)
         if word is None:
             break
 
         in_text += " " + word
+
         if word == "end":
             break
 
@@ -118,26 +121,32 @@ def home():
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    if "image" not in request.files:
-        return jsonify({"error": "Image file required"}), 400
+    try:
+        if "image" not in request.files:
+            return jsonify({"error": "Image file required"}), 400
 
-    file = request.files["image"]
-    image_bytes = file.read()
+        file = request.files["image"]
+        image_bytes = file.read()
 
-    # extract features directly from buffer
-    photo = extract_features_from_buffer(image_bytes, xception_model)
-    if photo is None:
-        return jsonify({"error": "Invalid image"}), 400
+        # Extract features
+        photo = extract_features_from_buffer(image_bytes, xception_model)
+        if photo is None:
+            return jsonify({"error": "Invalid image or processing failure"}), 400
 
-    caption = generate_desc(model, tokenizer, photo, max_length)
-    caption = caption.replace("start", "").replace("end", "").strip()
+        # Generate caption
+        caption = generate_desc(model, tokenizer, photo, max_length)
+        caption = caption.replace("start", "").replace("end", "").strip()
 
-    return jsonify({"caption": caption})
+        return jsonify({"caption": caption})
+
+    except Exception as e:
+        print("🔥 SERVER ERROR:", e)
+        return jsonify({"error": "Server crashed: " + str(e)}), 500
 
 
 # -----------------------------------
-# Production-ready run config
+# Server Runner
 # -----------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))   # required for Render.com
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
