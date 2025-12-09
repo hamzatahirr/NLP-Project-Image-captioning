@@ -16,7 +16,7 @@ app = Flask(__name__)
 # Load tokenizer and model weights
 # -----------------------------------
 TOKENIZER_PATH = "saved/tokenizer.p"
-MODEL_WEIGHTS_PATH = "saved/model_0.h5"
+MODEL_WEIGHTS_PATH = "saved/model_1.h5"
 
 tokenizer = load(open(TOKENIZER_PATH, "rb"))
 vocab_size = len(tokenizer.word_index) + 1
